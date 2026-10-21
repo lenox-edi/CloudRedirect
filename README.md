@@ -12,6 +12,20 @@ Abra a aba [Actions](https://github.com/lenox-edi/CloudRedirect/actions/workflow
 
 O EXE inclui a DLL correspondente embutida, por isso **não é necessário copiá-la à Steam manualmente**. A DLL separada é disponibilizada para conferência.
 
+## GitHub Packages (GHCR)
+
+O [pacote CloudRedirect](https://github.com/users/lenox-edi/packages?repo_name=CloudRedirect) é publicado pelo GitHub Actions como **artefato OCI** `ghcr.io/lenox-edi/cloudredirect:community-2.6.5`, contendo os dois arquivos de Windows. É um pacote de distribuição, **não é um contêiner executável**.
+
+Para extrair os arquivos com [ORAS](https://oras.land/):
+
+```powershell
+oras pull ghcr.io/lenox-edi/cloudredirect:community-2.6.5
+```
+
+Para baixar sem instalar ORAS, use a aba **Actions**, escolha uma execução aprovada e baixe o ZIP `CloudRedirect-Community-Edileno-win-x64`.
+
+A primeira publicação de pacotes no GHCR pode ficar privada por padrão; o proprietário pode ajustar sua visibilidade em **Packages → Package settings → Change visibility**. A publicação usa o token do próprio repositório para vincular o pacote.
+
 ## Como usar — qualquer jogo .lua
 
 1. Faça backup dos saves e saia completamente da Steam.
