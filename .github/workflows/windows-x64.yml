@@ -79,3 +79,53 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 30
+
+
+  publish-package:
+    name: Publicar no GitHub Packages (GHCR)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Baixar arquivos compilados no Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: CloudRedirect-Community-Edileno-win-x64
+          path: dist
+
+      - name: Conferir EXE e DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/CloudRedirect.exe
+          test -s dist/cloud_redirect.dll
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+          sha256sum dist/CloudRedirect.exe dist/cloud_redirect.dll
+
+      - name: Instalar ORAS (registro de artefatos OCI)
+        uses: oras-project/setup-oras@v2
+
+      - name: Entrar no registro GitHub
+        shell: bash
+        env:
+          GHCR_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publicar EXE e DLL na aba Packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          PKG="ghcr.io/\${GITHUB_REPOSITORY,,}"
+          oras push "$PKG:community-2.6.5" \
+            --artifact-type "application/vnd.cloudredirect.windows-x64.v1" \
+            --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "org.opencontainers.image.description=CloudRedirect Community Windows x64 (EXE e DLL; experimental)" \
+            "CloudRedirect.exe:application/octet-stream" \
+            "cloud_redirect.dll:application/octet-stream"
+          oras manifest fetch "$PKG:community-2.6.5" >/dev/null
+          echo "Pacote publicado: $PKG:community-2.6.5"
