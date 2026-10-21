@@ -1,21 +1,33 @@
-# CloudRedirect — edição Edileno (experimental)
+# CloudRedirect — edição Edileno (base comunitária)
 
-Este repositório importa o código aberto de [CloudRedirect-Community](https://github.com/Contrary7/CloudRedirect-Community) a partir de um commit fixo, aplica uma correção experimental de sincronização e compila um aplicativo **Windows x64** no GitHub Actions.
+Este repositório preserva a implementação comunitária do CloudRedirect v2.6.5 para **todos os jogos adicionados por `.lua` à Steam**. Não existem regras nem caminhos exclusivos para Valheim.
 
-## Objetivo
+**Origem do motor:** [Contrary7/CloudRedirect-Community](https://github.com/Contrary7/CloudRedirect-Community), que preserva o código de Selectively11/CloudRedirect. Licença MIT conforme `LICENSE`.
 
-Gerar `CloudRedirect.exe` e `cloud_redirect.dll` em um artefato de download. O executável inclui a DLL embutida e mantém a instalação na Steam realizada pela interface original. Os arquivos separados são fornecidos para conferência.
+## Arquivos para Windows
 
-## Download
+Abra a aba [Actions](https://github.com/lenox-edi/CloudRedirect/actions/workflows/windows-x64.yml) e baixe o artefato `CloudRedirect-Community-Edileno-win-x64` de uma compilação **verde**. Dentro do ZIP estão apenas:
+- `CloudRedirect.exe`
+- `cloud_redirect.dll`
 
-Abra a aba **Actions**, escolha **CloudRedirect Windows x64** e baixe o artefato **CloudRedirect-Edileno-win-x64** de uma execução bem-sucedida.
+O EXE inclui a DLL correspondente embutida, por isso **não é necessário copiá-la à Steam manualmente**. A DLL separada é disponibilizada para conferência.
 
-## Segurança dos saves
+## Como usar — qualquer jogo .lua
 
-**Experimental. Não substitua os saves sem backup.** Compile e teste usando primeiro uma cópia dos saves locais e remotos. Um build aprovado não comprova que a Steam e o Google Drive estão sincronizando corretamente. O Valheim foi adicionado à Steam por LUA, e esse cenário exige teste manual.
+1. Faça backup dos saves e saia completamente da Steam.
+2. Execute `CloudRedirect.exe`, selecione **CloudRedirect** (não o modo STfixer).
+3. Na aba **Setup**, use **Run All Patches** para implantar a DLL na pasta da Steam. A integração que carrega a DLL precisa estar ativa; apenas ter o arquivo na pasta não é suficiente.
+4. Na aba **Cloud Provider**, selecione o Google Drive (ou outro provedor) e faça login.
+5. Inicie a Steam novamente e teste a sincronização em um jogo instalado via LUA antes de usar os demais.
 
-O GitHub Action registra a origem do código e interrompe a execução em caso de falha na aplicação da correção ou na compilação. Usa somente o código-fonte público de um commit fixado, nunca um executável antigo reaproveitado com o nome de versão nova.
+O motor da comunidade intercepta as chamadas da Steam Cloud para os apps adicionados via LUA, incluindo jogos que usam AutoCloud. Jogos possuídos legitimamente continuam usando a Steam Cloud normal, como no original.
 
-Base comunitária: `Contrary7/CloudRedirect-Community`, commit `0be5f506cf45303e0a964ada7625a7cdcfff6850`. Consulte a licença original `LICENSE` após a importação automática dos fontes.
+## Limitações e segurança
 
-**Status:** correção experimental; funcionamento no Windows/Steam/Google Drive ainda não validado.
+O código nativo foi restaurado à versão comunitária, **sem o patch experimental de cache da versão anterior**. O repositório comunitário não fornece um release binário oficial neste momento; o workflow compila a DLL diretamente dos fontes.
+
+A compilação **não comprova** funcionamento da integração Steam, Google Drive ou sistema de LUA. Se a Steam continuar exibindo erro de sincronização, o diagnóstico precisa ser feito com os logs da DLL e com o estado real da instalação. Não force uma sincronização ou substitua saves sem backup.
+
+Os utilitários auxiliares de migração Steam 760 não estão incluídos no repositório público da comunidade e são opcionais para a sincronização cotidiana, mas recursos de migração podem ficar indisponíveis.
+
+Licença: MIT, consulte [LICENSE](LICENSE).
