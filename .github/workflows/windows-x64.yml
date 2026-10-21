@@ -44,6 +44,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Copy-Item 'patches/rpc_handlers.cpp' 'src/common/rpc_handlers.cpp' -Force
           Copy-Item 'patches/changelist_cache_policy.h' 'src/common/changelist_cache_policy.h' -Force
+          New-Item -ItemType Directory -Force -Path 'tests' | Out-Null
           Copy-Item 'patches/changelist_cache_policy_tests.cpp' 'tests/changelist_cache_policy_tests.cpp' -Force
           $cm = Get-Content CMakeLists.txt -Raw
           if (!$cm.Contains('add_executable(changelist_cache_policy_tests')) {
