@@ -1,0 +1,138 @@
+name: CloudRedirect Windows x64
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Importar fontes originais fixados
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!(Test-Path 'CMakeLists.txt')) {
+            git clone --filter=blob:none https://github.com/Contrary7/CloudRedirect-Community.git _source
+            if ($LASTEXITCODE -ne 0) { throw 'Nao foi possivel obter a origem' }
+            git -C _source checkout 0be5f506cf45303e0a964ada7625a7cdcfff6850
+            if ($LASTEXITCODE -ne 0) { throw 'Commit de origem nao encontrado' }
+            $sourceSha = (git -C _source rev-parse HEAD).Trim()
+            if ($sourceSha -ne '0be5f506cf45303e0a964ada7625a7cdcfff6850') { throw 'Commit de origem inesperado' }
+            robocopy _source . /E /XD .git .github /XF README.md /NFL /NDL /NJH /NJS /NP
+            if ($LASTEXITCODE -ge 8) { throw "Falha ao copiar fontes (robocopy $LASTEXITCODE)" }
+            $global:LASTEXITCODE = 0
+            Remove-Item _source -Recurse -Force
+          }
+          if (!(Test-Path 'CMakeLists.txt')) { throw 'CMakeLists.txt ausente' }
+
+      - name: Aplicar correcao de sincronizacao e testes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item 'patches/rpc_handlers.cpp' 'src/common/rpc_handlers.cpp' -Force
+          Copy-Item 'patches/changelist_cache_policy.h' 'src/common/changelist_cache_policy.h' -Force
+          Copy-Item 'patches/changelist_cache_policy_tests.cpp' 'tests/changelist_cache_policy_tests.cpp' -Force
+          $cm = Get-Content CMakeLists.txt -Raw
+          if (!$cm.Contains('add_executable(changelist_cache_policy_tests')) {
+            Add-Content CMakeLists.txt -Value ([string]::Join("`n", @(
+              '',
+              '# Edileno: teste para downloads incompletos de saves na inicializacao',
+              'enable_testing()',
+              'add_executable(changelist_cache_policy_tests tests/changelist_cache_policy_tests.cpp)',
+              'target_include_directories(changelist_cache_policy_tests PRIVATE src/common)',
+              'add_test(NAME changelist_cache_policy_tests COMMAND changelist_cache_policy_tests)'
+            )))
+          }
+          # Os dois utilitarios auxiliares de 32 bits nao estao no Git da comunidade.
+          # Sao opcionais para o redirecionamento dos saves, entao evite build quebrado.
+          $csprojPath = 'ui/CloudRedirect.csproj'
+          $csproj = Get-Content $csprojPath -Raw
+          $oldTool = '<EmbeddedResource Include="native\cloud760_tool.exe" LogicalName="cloud760_tool.exe" />'
+          $newTool = '<EmbeddedResource Include="native\cloud760_tool.exe" LogicalName="cloud760_tool.exe" Condition="Exists(''native\cloud760_tool.exe'')" />'
+          $oldApi = '<EmbeddedResource Include="native\steam_api.dll" LogicalName="steam_api.dll" />'
+          $newApi = '<EmbeddedResource Include="native\steam_api.dll" LogicalName="steam_api.dll" Condition="Exists(''native\steam_api.dll'')" />'
+          if ($csproj.Contains($oldTool)) { $csproj = $csproj.Replace($oldTool, $newTool) }
+          if ($csproj.Contains($oldApi)) { $csproj = $csproj.Replace($oldApi, $newApi) }
+          Set-Content $csprojPath $csproj -Encoding utf8
+          if (!(Select-String -Path 'src/common/rpc_handlers.cpp' -SimpleMatch 'CanSuppressRepeat' -Quiet)) { throw 'Correcao nao aplicada' }
+          if (!(Select-String -Path 'src/common/rpc_handlers.cpp' -SimpleMatch 'MayMarkFull' -Quiet)) { throw 'Protecao de fallback nao aplicada' }
+
+      - name: Guardar codigo-fonte no GitHub
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "build: importar fontes e integrar correcao de sincronizacao"
+            if ($LASTEXITCODE -ne 0) { throw 'Commit falhou' }
+            git push origin HEAD:main
+            if ($LASTEXITCODE -ne 0) { throw 'Sem permissao para publicar o codigo no GitHub' }
+          }
+
+      - name: Instalar SDK .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Configurar C++ Windows x64
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'CMake falhou' }
+
+      - name: Compilar DLL, CLI e testes nativos
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target cloud_redirect cloud_redirect_cli changelist_cache_policy_tests --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Compilacao C++ falhou' }
+
+      - name: Executar testes de regressao
+        shell: pwsh
+        run: |
+          ctest --test-dir build -C Release --output-on-failure -R '^changelist_cache_policy_tests$'
+          if ($LASTEXITCODE -ne 0) { throw 'Testes falharam' }
+
+      - name: Compilar aplicativo com DLL nova embutida
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'build/Release/cloud_redirect.dll')) { throw 'DLL nao encontrada' }
+          if (!(Test-Path 'build/Release/cloud_redirect_cli.exe')) { throw 'CLI nao encontrada' }
+          dotnet publish ui/CloudRedirect.csproj -c Release -r win-x64 --self-contained false -o publish
+          if ($LASTEXITCODE -ne 0) { throw 'Publicacao .NET falhou' }
+          if (!(Test-Path 'publish/CloudRedirect.exe')) { throw 'EXE nao encontrado' }
+          if (!(Test-Path 'ui/Resources/cloud_redirect.dll')) { throw 'DLL nao embutida no build' }
+          if ((Get-FileHash 'ui/Resources/cloud_redirect.dll').Hash -ne (Get-FileHash 'build/Release/cloud_redirect.dll').Hash) { throw 'DLL embutida diferente da DLL compilada' }
+
+      - name: Preparar somente EXE e DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item publish/CloudRedirect.exe dist/CloudRedirect.exe
+          Copy-Item build/Release/cloud_redirect.dll dist/cloud_redirect.dll
+          Get-FileHash dist/CloudRedirect.exe, dist/cloud_redirect.dll -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
+            Out-File -FilePath dist/SHA256SUMS.txt -Encoding ascii
+
+      - name: Disponibilizar download
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloudRedirect-Edileno-win-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
