@@ -110,7 +110,7 @@ jobs:
       - name: Entrar no registro GitHub
         shell: bash
         env:
-          GHCR_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           printf '%s' "$GHCR_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
@@ -120,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          PKG="ghcr.io/\${GITHUB_REPOSITORY,,}"
+          PKG="ghcr.io/${GITHUB_REPOSITORY,,}"
           oras push "$PKG:community-2.6.5" \
             --artifact-type "application/vnd.cloudredirect.windows-x64.v1" \
             --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
