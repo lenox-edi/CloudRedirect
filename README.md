@@ -45,3 +45,14 @@ A compilação **não comprova** funcionamento da integração Steam, Google Dri
 Os utilitários auxiliares de migração Steam 760 não estão incluídos no repositório público da comunidade e são opcionais para a sincronização cotidiana, mas recursos de migração podem ficar indisponíveis.
 
 Licença: MIT, consulte [LICENSE](LICENSE).
+
+## Diagnóstico de sincronização (outubro de 2026)
+
+A partir do `cloud_redirect.log` foi observado um caso em que a Steam iniciou no modo **local-only** (sem `config.json`), aceitou uploads locais e mais tarde conectou ao Google Drive. Os lotes **não foram publicados**, deixando `clientCN` à frente do `cloudCN`.
+
+**Correção preventiva no código da DLL:** `HandleBeginBatch` agora falha antes de atribuir um número de sincronização quando o provedor não está disponível/autenticado; `HandleCompleteBatch` retorna erro à Steam quando não consegue concluir a publicação. Isso preserva os saves e evita afirmar sincronização inexistente. A correção **não resolve automaticamente conflitos que já existiam antes dela**.
+
+**Como diagnosticar:** abra o arquivo `cloud_redirect.log` na pasta da Steam e procure por `provider=none`, `provider=Google Drive`, `BLOCKED -- cloud provider`, `staged promotion failed` e `clientCN`. `provider=Google Drive` apenas confirma que o provedor foi inicializado; não prova que todos os saves foram sincronizados.
+
+**Antes de corrigir um conflito existente:** copie para um local separado a pasta `Steam\\cloud_redirect`, a pasta `Steam\\userdata`, os saves reais do jogo e um backup/exportação do provedor. **Não apague remotecache.vdf, não ajuste change numbers à mão e não rode o comando `publish-full-manifest` como tentativa aleatória de reparo.** Esse comando não garante que todos os blobs associados existam na nuvem. Escolha a versão a preservar somente após comparar os arquivos locais e remotos.
+
