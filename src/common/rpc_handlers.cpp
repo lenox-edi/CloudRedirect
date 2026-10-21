@@ -1426,6 +1426,14 @@ RpcResult HandleBeginBatch(uint32_t appId, const std::vector<PB::Field>& reqBody
         // Fail early: error skips CompleteBatch, preventing orphaned local blobs.
         return RpcResult(PB::Writer(), kEResultFail);
     }
+    // Do not assign a new client CN when the provider is missing or logged out.
+    // Previously BeginBatch returned success in local-only mode while CompleteBatch
+    // could not promote blobs, leaving Steam's client CN ahead of the cloud CN.
+    if (!CloudStorage::IsCloudActive()) {
+        LOG("[NS] BeginBatch app=%u: BLOCKED -- cloud provider missing or unauthenticated; "
+            "refusing to assign a change number (protects saves from false sync)", appId);
+        return RpcResult(PB::Writer(), kEResultFail);
+    }
 
     // If a previous batch's cloud publish is still in-flight, wait for it so
     // FetchCloudStateForServe sees the fresh CN. Typically a no-op (single batch)
@@ -1970,11 +1978,11 @@ RpcResult HandleCompleteBatch(uint32_t appId, const std::vector<PB::Field>& reqB
         appId, (long long)promoteMs, *promoteOk ? 1 : 0);
     if (!*promoteOk) {
         LOG("[NS] CompleteBatch app=%u: staged promotion failed; "
-            "leaving CN unchanged (Steam re-uploads next sync)", appId);
+            "leaving CN unchanged and returning error to Steam (no false success)", appId);
         PendingOpsJournal::RecordUploadBatchInterrupted(accountId, appId);
         BatchTracker_Clear(accountId, appId, batch.batchId);
         ClearBatchCanonicalTokens(accountId, appId);
-        return PB::Writer();
+        return RpcResult(PB::Writer(), kEResultFail);
     }
 
     // Advance the local CN/manifest now that the blobs are durable.
