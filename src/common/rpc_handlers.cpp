@@ -11,6 +11,7 @@
 #include "cloud_staging.h"
 #include "app_state.h"
 #include "cloud_storage.h"
+#include "changelist_cache_policy.h"
 #include "coop_yield.h"
 #include "pending_ops_journal.h"
 #include "file_util.h"
@@ -141,6 +142,8 @@ static std::mutex g_fullManifestSentMutex;
 // Per-(account, app) cached CN and buildId for the fast repeat-call path.
 static std::unordered_map<uint64_t, uint64_t> g_cachedCloudCN;
 static std::unordered_map<uint64_t, uint64_t> g_cachedAppBuildIdHwm;
+// Cloud inventory advertised to Steam; a repeat call may be skipped only when each blob was cached.
+static std::unordered_map<uint64_t, std::unordered_set<std::string>> g_cachedManifestBlobs;
 
 static uint64_t GetCachedCloudCN(uint32_t accountId, uint32_t appId) {
     auto it = g_cachedCloudCN.find(MakeAppAccountKey(accountId, appId));
@@ -580,12 +583,32 @@ RpcResult HandleGetChangelist(uint32_t appId, const std::vector<PB::Field>& reqB
         bool repeatCall = false;
         uint64_t cachedCN = 0;
         uint64_t cachedBuildId = 0;
+        std::unordered_set<std::string> expectedFiles;
         {
             std::lock_guard<std::mutex> lock(g_fullManifestSentMutex);
             if (g_fullManifestSentApps.count(cacheKey) > 0) {
                 repeatCall = true;
                 cachedCN = GetCachedCloudCN(accountId, appId);
                 cachedBuildId = GetCachedAppBuildIdHwm(accountId, appId);
+                auto iter = g_cachedManifestBlobs.find(cacheKey);
+                if (iter != g_cachedManifestBlobs.end()) expectedFiles = iter->second;
+            }
+        }
+        if (repeatCall) {
+            // A delivered manifest does not prove Steam successfully downloaded the data.
+            // Re-advertise the cloud inventory until every expected blob exists locally.
+            const bool cacheComplete = ChangelistCachePolicy::CanSuppressRepeat(
+                cachedCN != 0, expectedFiles, [&](const std::string& name) {
+                    return CloudStorage::HasLocalBlob(accountId, appId, name);
+                });
+            if (!cacheComplete) {
+                LOG("[NS-CL] GetAppFileChangelist app=%u: incomplete cloud cache, reloading manifest", appId);
+                std::lock_guard<std::mutex> lock(g_fullManifestSentMutex);
+                g_fullManifestSentApps.erase(cacheKey);
+                g_cachedCloudCN.erase(cacheKey);
+                g_cachedAppBuildIdHwm.erase(cacheKey);
+                g_cachedManifestBlobs.erase(cacheKey);
+                repeatCall = false;
             }
         }
         if (repeatCall) {
@@ -601,6 +624,7 @@ RpcResult HandleGetChangelist(uint32_t appId, const std::vector<PB::Field>& reqB
                 g_fullManifestSentApps.erase(cacheKey);
                 g_cachedCloudCN.erase(cacheKey);
                 g_cachedAppBuildIdHwm.erase(cacheKey);
+                g_cachedManifestBlobs.erase(cacheKey);
                 // Fall through to full fetch below
             } else if (remoteCN != cachedCN) {
                 LOG("[NS-CL] GetAppFileChangelist app=%u: remote CN=%llu differs from cached CN=%llu, invalidating cache",
@@ -609,6 +633,7 @@ RpcResult HandleGetChangelist(uint32_t appId, const std::vector<PB::Field>& reqB
                 g_fullManifestSentApps.erase(cacheKey);
                 g_cachedCloudCN.erase(cacheKey);
                 g_cachedAppBuildIdHwm.erase(cacheKey);
+                g_cachedManifestBlobs.erase(cacheKey);
                 // Fall through to full fetch below
             } else {
                 LOG("[NS-CL] GetAppFileChangelist app=%u: repeat call, CN unchanged (%llu), returning cached empty delta",
@@ -716,6 +741,15 @@ RpcResult HandleGetChangelist(uint32_t appId, const std::vector<PB::Field>& reqB
     bool responseIsDelta = true;
 
     if (inconclusiveFetch) {
+        // A failed provider read is not an authoritative cloud inventory.
+        const uint64_t staleKey = MakeAppAccountKey(accountId, appId);
+        {
+            std::lock_guard<std::mutex> lock(g_fullManifestSentMutex);
+            g_fullManifestSentApps.erase(staleKey);
+            g_cachedCloudCN.erase(staleKey);
+            g_cachedAppBuildIdHwm.erase(staleKey);
+            g_cachedManifestBlobs.erase(staleKey);
+        }
         // Cloud state unknown: serve local files as a pure delta (is_only_delta=1)
         // so Steam never reconcile-deletes or treats it as cloud-empty. Don't rewind CN.
         SetRpcCrashContext("GetChangelist:inconclusive-fetch", "Cloud.GetAppFileChangelist#1", appId);
@@ -785,10 +819,33 @@ RpcResult HandleGetChangelist(uint32_t appId, const std::vector<PB::Field>& reqB
                     "(failed batch), returning empty delta to protect local saves",
                     appId, clientChangeNumber, cloudCN);
             } else if (alreadySentFull) {
-                // Subsequent call: empty delta (avoids stale SHA/timestamp conflicts).
-                responseIsDelta = true;
-                LOG("[NS-CL] GetAppFileChangelist app=%u: already sent full manifest this session, returning empty delta at CN=%llu",
-                    appId, cloudCN);
+                // Do not hide cloud files when a download failed or was incomplete.
+                bool allCached = true;
+                for (const auto& [name, entry] : fetchedState.files) {
+                    if (entry.persistState != 0 || IsReservedBlobFilename(name)) continue;
+                    if (!CloudStorage::HasLocalBlob(accountId, appId, name)) {
+                        allCached = false;
+                        break;
+                    }
+                }
+                if (allCached && !fetchedState.files.empty()) {
+                    responseIsDelta = true;
+                    LOG("[NS-CL] GetAppFileChangelist app=%u: remote blobs cached, returning empty delta at CN=%llu", appId, cloudCN);
+                } else {
+                    responseIsDelta = false;
+                    for (const auto& [filename, entry] : cloudManifest) {
+                        if (IsReservedBlobFilename(filename)) continue;
+                        LocalStorage::FileEntry fe;
+                        fe.filename = filename;
+                        fe.sha = entry.sha;
+                        fe.timestamp = entry.timestamp;
+                        fe.rawSize = entry.size;
+                        fe.deleted = false;
+                        files.push_back(std::move(fe));
+                    }
+                    LOG("[NS-CL] GetAppFileChangelist app=%u: replaying %zu cloud files at CN=%llu",
+                        appId, files.size(), cloudCN);
+                }
             } else {
                 // First call: full manifest. Use cloud timestamps so subsequent
                 // compares see the same remotetime (avoids false conflicts).
@@ -810,6 +867,11 @@ RpcResult HandleGetChangelist(uint32_t appId, const std::vector<PB::Field>& reqB
                     g_fullManifestSentApps.insert(cacheKey);
                     g_cachedCloudCN[cacheKey] = cloudCN;
                     g_cachedAppBuildIdHwm[cacheKey] = appBuildIdHwm;
+                    auto& expected = g_cachedManifestBlobs[cacheKey];
+                    expected.clear();
+                    for (const auto& [name, entry] : fetchedState.files)
+                        if (entry.persistState == 0 && !IsReservedBlobFilename(name))
+                            expected.insert(name);
                 }
                 LOG("[NS-CL] GetAppFileChangelist app=%u: returning full manifest (%zu files) at CN=%llu (clientCN=%llu)",
                     appId, files.size(), cloudCN, clientChangeNumber);
@@ -833,15 +895,19 @@ RpcResult HandleGetChangelist(uint32_t appId, const std::vector<PB::Field>& reqB
     LOG("[NS-CL] GetAppFileChangelist app=%u clientCN=%llu serverCN=%llu files=%zu",
         appId, clientChangeNumber, serverChangeNumber, files.size());
 
-    // Cache result so repeat calls (CM reconnects) skip cloud I/O entirely.
-    // Don't cache placeholder responses (CN==0, empty files).
-    if (serverChangeNumber > 0 || !files.empty()) {
+    // Never mark local/delta/error fallbacks as a completed authoritative cloud fetch.
+    if (ChangelistCachePolicy::MayMarkFull(haveCloudManifest, inconclusiveFetch, responseIsDelta)) {
         const uint64_t cacheKey = MakeAppAccountKey(accountId, appId);
         std::lock_guard<std::mutex> lock(g_fullManifestSentMutex);
         if (g_fullManifestSentApps.count(cacheKey) == 0) {
             g_fullManifestSentApps.insert(cacheKey);
             g_cachedCloudCN[cacheKey] = serverChangeNumber;
             g_cachedAppBuildIdHwm[cacheKey] = appBuildIdHwm;
+            auto& expected = g_cachedManifestBlobs[cacheKey];
+            expected.clear();
+            for (const auto& [name, entry] : fetchedState.files)
+                if (entry.persistState == 0 && !IsReservedBlobFilename(name))
+                    expected.insert(name);
         }
     }
 

@@ -461,3 +461,9 @@ if(WIN32)
         DEPENDS cloud_redirect cloud_redirect_cli
     )
 endif()
+
+# Edileno: teste para downloads incompletos de saves na inicializacao
+enable_testing()
+add_executable(changelist_cache_policy_tests tests/changelist_cache_policy_tests.cpp)
+target_include_directories(changelist_cache_policy_tests PRIVATE src/common)
+add_test(NAME changelist_cache_policy_tests COMMAND changelist_cache_policy_tests)
